@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import re
 import time
+from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
@@ -23,6 +24,8 @@ from .config import (
     DEFAULT_HEADERS,
     HTTP_PROXY,
     HTTPS_PROXY,
+    USER_AGENTS,
+    PROXY_POOL,
 )
 
 
@@ -73,29 +76,85 @@ class Review:
     video_urls: List[str]
 
 
+class _Rotator:
+    def __init__(self, values: Iterable[Any]):
+        self._values: List[Any] = [v for v in values if v]
+        self._idx = 0
+
+    def next(self) -> Optional[Any]:
+        if not self._values:
+            return None
+        value = self._values[self._idx]
+        self._idx = (self._idx + 1) % len(self._values)
+        return value
+
+
+def _normalize_proxy_entry(entry: Any) -> Optional[Dict[str, str]]:
+    if not entry:
+        return None
+    if isinstance(entry, str):
+        entry = entry.strip()
+        if not entry:
+            return None
+        return {"http": entry, "https": entry}
+    if isinstance(entry, dict):
+        normalized: Dict[str, str] = {}
+        for key in ("http", "https"):
+            val = entry.get(key)
+            if isinstance(val, str) and val.strip():
+                normalized[key] = val.strip()
+        return normalized or None
+    return None
+
+
 class TikiApi:
     def __init__(self, headers: Optional[Dict[str, str]] = None):
-        proxies = None
-        if HTTP_PROXY or HTTPS_PROXY:
-            proxies = {}
-            if HTTP_PROXY:
-                proxies["http"] = HTTP_PROXY
-            if HTTPS_PROXY:
-                proxies["https"] = HTTPS_PROXY
+        self.base_headers = dict(headers or DEFAULT_HEADERS)
 
-        self.client = httpx.Client(
-            base_url=TIKI_BASE_URL,
-            headers=headers or DEFAULT_HEADERS,
-            timeout=30.0,
-            proxies=proxies,
-            follow_redirects=True,
-        )
+        ua_pool = USER_AGENTS if isinstance(USER_AGENTS, list) else []
+        if self.base_headers.get("User-Agent") and self.base_headers["User-Agent"] not in ua_pool:
+            ua_pool = [self.base_headers["User-Agent"], *(ua_pool or [])]
+        self._ua_rotator = _Rotator(ua_pool or [self.base_headers.get("User-Agent")])
+
+        proxy_entries: List[Dict[str, str]] = []
+        for raw in (PROXY_POOL or []):
+            norm = _normalize_proxy_entry(raw)
+            if norm:
+                proxy_entries.append(norm)
+        default_proxy = _normalize_proxy_entry({"http": HTTP_PROXY, "https": HTTPS_PROXY})
+        if default_proxy and default_proxy not in proxy_entries:
+            proxy_entries.append(default_proxy)
+        self._proxy_rotator = _Rotator(proxy_entries)
+
+        self._clients: Dict[Optional[Tuple[Tuple[str, str], ...]], httpx.Client] = {}
+
+    def _client_for_proxy(self, proxy: Optional[Dict[str, str]]) -> httpx.Client:
+        key = None
+        if proxy:
+            key = tuple(sorted(proxy.items()))
+        if key not in self._clients:
+            self._clients[key] = httpx.Client(
+                base_url=TIKI_BASE_URL,
+                headers=self.base_headers,
+                timeout=30.0,
+                proxies=proxy,
+                follow_redirects=True,
+            )
+        return self._clients[key]
+
+    def _choose_headers(self) -> Dict[str, str]:
+        headers = deepcopy(self.base_headers)
+        ua = self._ua_rotator.next()
+        if isinstance(ua, str) and ua.strip():
+            headers["User-Agent"] = ua.strip()
+        return headers
 
     def close(self):
-        try:
-            self.client.close()
-        except Exception:
-            pass
+        for client in self._clients.values():
+            try:
+                client.close()
+            except Exception:
+                pass
 
     @retry(reraise=True,
            stop=stop_after_attempt(RETRY_MAX),
@@ -103,7 +162,10 @@ class TikiApi:
            retry=retry_if_exception_type((httpx.HTTPError, ApiError)))
     def _get(self, url: str, params: Optional[Dict[str, Any]] = None) -> httpx.Response:
         _rl()
-        resp = self.client.get(url, params=params)
+        proxy = self._proxy_rotator.next()
+        client = self._client_for_proxy(proxy)
+        headers = self._choose_headers()
+        resp = client.get(url, params=params, headers=headers)
         if resp.status_code == 429:
             raise ApiError("Too Many Requests (429)")
         resp.raise_for_status()
