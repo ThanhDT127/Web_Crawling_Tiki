@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 import pymysql
-from typing import List, Dict, Any
+from typing import Iterable, List, Dict, Any
 from .config import MYSQL_HOST, MYSQL_USER, MYSQL_PASS, DB_RD, DB_OTHER
 
 
@@ -75,6 +75,20 @@ def init_databases():
     c.execute(CREATE_TABLE_SQL_OTHER); con.commit(); c.close(); con.close()
 
 
+def _normalize_media(values: Any) -> str:
+    """Normalize list-like media values (images/videos) into comma-separated str."""
+    if not values:
+        return ""
+    if isinstance(values, str):
+        return values.strip()
+    if isinstance(values, dict):
+        values = values.values()
+    if isinstance(values, Iterable):
+        cleaned = [str(item).strip() for item in values if item]
+        return ",".join(cleaned)
+    return ""
+
+
 def save_reviews(dbname: str, rows: List[Dict[str, Any]]) -> int:
     if not rows:
         return 0
@@ -101,8 +115,8 @@ def save_reviews(dbname: str, rows: List[Dict[str, Any]]) -> int:
                 r.get("reviewer"),
                 r.get("review_date"),
                 r.get("review_text"),
-                ",".join(r.get("image_urls", [])) if isinstance(r.get("image_urls"), list) else "",
-                ",".join(r.get("video_urls", [])) if isinstance(r.get("video_urls"), list) else "",
+                _normalize_media(r.get("image_urls")),
+                _normalize_media(r.get("video_urls")),
                 r.get("product_link"),
                 r.get("review_id_hash"),
                 r.get("from", "Tiki"),
@@ -127,8 +141,8 @@ def save_reviews(dbname: str, rows: List[Dict[str, Any]]) -> int:
                 r.get("reviewer"),
                 r.get("review_date"),
                 r.get("review_text"),
-                ",".join(r.get("image_urls", [])) if isinstance(r.get("image_urls"), list) else "",
-                ",".join(r.get("video_urls", [])) if isinstance(r.get("video_urls", []), list) else "",
+                _normalize_media(r.get("image_urls")),
+                _normalize_media(r.get("video_urls")),
                 r.get("product_link"),
                 r.get("review_id_hash"),
                 r.get("from", "Tiki"),
