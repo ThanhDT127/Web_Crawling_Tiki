@@ -64,3 +64,14 @@ DEFAULT_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Referer": TIKI_BASE_URL,
 }
+
+# Danh sách User-Agent để xoay vòng mỗi request, giúp tránh bị chặn đơn giản.
+USER_AGENTS = [
+    DEFAULT_HEADERS["User-Agent"],
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
+]
+
+# Pool proxy để xoay IP. Mỗi phần tử có thể là chuỗi (dùng chung cho HTTP/HTTPS) hoặc dict.
+# Ví dụ: PROXY_POOL = ["http://user:pass@host1:port", {"http": "http://...", "https": "http://..."}]
+PROXY_POOL = []
