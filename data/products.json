@@ -1,0 +1,14 @@
+{
+  "Demo Category": {
+    "rangdong": {
+      "LB1": [
+        { "tiki": ["https://tiki.vn/san-pham-demo-p123456.html"] }
+      ]
+    },
+    "Philips": {
+      "Philips 12W": [
+        { "tiki": ["https://tiki.vn/philips-12w-p654321.html"] }
+      ]
+    }
+  }
+}
