@@ -7,6 +7,7 @@ import time
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
@@ -53,17 +54,31 @@ _rl = _rate_limiter_factory(RATE_LIMIT_RPS)
 
 
 def _extract_product_id(url: str) -> Optional[str]:
+    pid, _ = extract_ids_from_url(url)
+    return pid
+
+
+def extract_ids_from_url(url: str) -> Tuple[Optional[str], Optional[str]]:
+    """Return the ``product_id`` and ``spid`` extracted from a Tiki product URL.
+
+    The implementation mirrors the lightweight helper used in
+    ``test_tiki_reviews.py`` so we can reliably parse the identifiers that are
+    required when calling the public API endpoints during crawling.
+    """
+
     if not url:
-        return None
-    # Phổ biến: https://tiki.vn/<slug>-p12345678.html
-    m = re.search(r"-p(\d+)(?:\.html|$)", url)
-    if m:
-        return m.group(1)
-    # Fallback: query param product_id=123
-    m = re.search(r"[?&]product_id=(\d+)", url)
-    if m:
-        return m.group(1)
-    return None
+        return None, None
+
+    # product_id xuất hiện trong slug dạng -p<digits>.html
+    match = re.search(r"-p(\d+)(?:\.html|$)", url)
+    product_id = match.group(1) if match else None
+
+    # spid (nếu có) nằm ở query param "spid"
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query or "")
+    spid = (query.get("spid", [None]) or [None])[0]
+
+    return product_id, spid
 
 
 @dataclass
@@ -189,12 +204,22 @@ class TikiApi:
             "page": page,
             "limit": limit,
             "sort": sort,
-            # NOTE: API thực tế cần xác nhận tham số filter sao
         }
+        star_param_used: Optional[str] = None
         if star in [1, 2, 3, 4, 5]:
             params[STAR_FILTER_PARAM] = star
+            star_param_used = STAR_FILTER_PARAM
 
-        r = self._get(REVIEWS_ENDPOINT, params=params)
+        try:
+            r = self._get(REVIEWS_ENDPOINT, params=params)
+        except httpx.HTTPStatusError:
+            if star is not None and star_param_used and star_param_used.lower() == "stars":
+                params.pop(STAR_FILTER_PARAM, None)
+                params["rating"] = star
+                r = self._get(REVIEWS_ENDPOINT, params=params)
+            else:
+                raise
+
         data = r.json()
 
         # Map dữ liệu → List[Review]. Tuỳ cấu trúc Tiki API (cần xác nhận tên trường chính xác)
@@ -205,7 +230,13 @@ class TikiApi:
 
         for e in raw_items:
             try:
-                reviewer = (e.get("created_by") or {}).get("name") or e.get("created_by_name") or ""
+                creator = e.get("created_by") or {}
+                reviewer = (
+                    creator.get("full_name")
+                    or creator.get("name")
+                    or e.get("created_by_name")
+                    or ""
+                )
                 review_date = e.get("created_at") or e.get("time") or ""
                 rating = e.get("rating") or e.get("stars") or e.get("score")
                 if isinstance(rating, str) and rating.isdigit():
@@ -259,3 +290,7 @@ class TikiApi:
     @staticmethod
     def parse_product_id(url: str) -> Optional[str]:
         return _extract_product_id(url)
+
+    @staticmethod
+    def parse_product_and_spid(url: str) -> Tuple[Optional[str], Optional[str]]:
+        return extract_ids_from_url(url)
